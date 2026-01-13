@@ -132,11 +132,11 @@ open class SwipeCardStack: UIView, SwipeCardDelegate, UIGestureRecognizerDelegat
     card.isUserInteractionEnabled = position == 0
   }
 
-  func scaleFactor(forCardAtPosition position: Int) -> CGPoint {
+  open func scaleFactor(forCardAtPosition position: Int) -> CGPoint {
     return position == 0 ? CGPoint(x: 1, y: 1) : CGPoint(x: 0.95, y: 0.95)
   }
 
-  func transform(forCardAtPosition position: Int) -> CGAffineTransform {
+  open func transform(forCardAtPosition position: Int) -> CGAffineTransform {
     let cardScaleFactor = scaleFactor(forCardAtPosition: position)
     return CGAffineTransform(scaleX: cardScaleFactor.x, y: cardScaleFactor.y)
   }
