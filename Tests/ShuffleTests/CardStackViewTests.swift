@@ -16,6 +16,55 @@ final class CardStackViewTests: XCTestCase {
     return (window, stack)
   }
 
+  func testResetUsesLatestValidSessionIncludingDeferredInput() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3])
+    stack.swipe(.left)
+    try stack.updateCards([1, 4, 2])
+    XCTAssertThrowsError(try stack.updateCards([9, 9]))
+    stack.reset()
+    XCTAssertEqual(stack.state.remainingCardIDs, [1, 4, 2])
+    XCTAssertFalse(stack.state.canUndo)
+    stack.swipe(.right, animated: false)
+    stack.reset()
+    XCTAssertEqual(stack.state.remainingCardIDs, [1, 4, 2])
+  }
+
+  func testRestoredSessionCanResetWithoutAnotherDataUpdate() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3])
+    stack.swipe(.left, animated: false)
+    let restored = CardStackView<Int>(restoring: stack.snapshot) { _ in SwipeCard() }
+    restored.reset()
+    XCTAssertEqual(restored.state.remainingCardIDs, [1, 2, 3])
+    XCTAssertFalse(restored.state.canUndo)
+  }
+
+  func testDeferredInputRetainsItsOwnCardFactories() throws {
+    var created: [String] = []
+    func input(_ version: String) throws -> CardStackView<Int>.Input {
+      try .init([1, 2, 3].map { id in
+        .init(id: id, makeCard: { created.append("\(version):\(id)"); return SwipeCard() })
+      })
+    }
+    let old = try input("old")
+    let next = try input("next")
+    let (window, _) = fixture(); defer { window.isHidden = true }
+    let stack = CardStackView<Int>(configuration: .init(), restoring: nil, input: old)
+    window.rootViewController!.view.addSubview(stack)
+    stack.frame = CGRect(x: 0, y: 0, width: 350, height: 500)
+    stack.update(old)
+    stack.onActionAccepted = { _ in stack.update(next) }
+    stack.swipe(.right)
+    XCTAssertTrue(created.contains("old:3"), "In-flight rendering must use the active content version")
+    XCTAssertFalse(created.contains("next:3"))
+    stack.reset()
+    XCTAssertTrue(created.contains("next:1"))
+    XCTAssertTrue(created.contains("next:2"))
+    XCTAssertEqual(stack.state.remainingCardIDs, [1, 2, 3])
+    stack.onActionAccepted = nil
+  }
+
   func testConfigurationPreservesRetainedCardsAndHistory() throws {
     let (window, stack) = fixture(); defer { window.isHidden = true }
     try stack.updateCards([1, 2, 3, 4])

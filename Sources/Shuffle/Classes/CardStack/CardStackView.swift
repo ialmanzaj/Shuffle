@@ -6,17 +6,37 @@ import UIKit
 public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   /// Value-only checkpoint. Restoring it never replays accepted actions or animations.
   public struct Snapshot {
-    fileprivate let remaining: [CardID]
+    fileprivate let sessionIDs: [CardID]
     fileprivate let history: [(id: CardID, direction: SwipeDirection)]
+  }
+
+  // AIDEV-NOTE: Each entry carries its own content factory. Deferred input cannot
+  // accidentally read a newer presentation's item dictionary.
+  struct Entry {
+    let id: CardID
+    let makeCard: () -> SwipeCard
+  }
+
+  struct Input {
+    let entries: [Entry]
+    var ids: [CardID] { entries.map(\.id) }
+
+    init(_ entries: [Entry]) throws {
+      var seen: Set<CardID> = []
+      for entry in entries {
+        guard seen.insert(entry.id).inserted else { throw CardStackError.duplicateIDs }
+      }
+      self.entries = entries
+    }
   }
 
   /// Captures accepted actions, including the latest deferred data update.
   public var snapshot: Snapshot {
-    guard let ids = pendingIDs else { return Snapshot(remaining: remaining, history: history) }
-    let surviving = Set(ids)
-    let retainedHistory = history.filter { surviving.contains($0.id) }
-    let swiped = Set(retainedHistory.map { $0.id })
-    return Snapshot(remaining: ids.filter { !swiped.contains($0) }, history: retainedHistory)
+    let entries = pendingInput?.entries ?? session
+    let surviving = Set(entries.map(\.id))
+    let retainedHistory = history.filter { surviving.contains($0.entry.id) }
+    return Snapshot(sessionIDs: entries.map(\.id),
+                    history: retainedHistory.map { ($0.entry.id, $0.direction) })
   }
 
   public private(set) var configuration: CardStackConfiguration
@@ -25,19 +45,20 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   public var onStateChanged: ((CardStackState<CardID>) -> Void)?
 
   public var state: CardStackState<CardID> {
-    CardStackState(currentCardID: remaining.first, remainingCardIDs: remaining,
+    CardStackState(currentCardID: remaining.first?.id, remainingCardIDs: remaining.map(\.id),
                    canUndo: !history.isEmpty && phase == .idle, phase: phase)
   }
 
-  private let makeCard: (CardID) -> SwipeCard
-  private var remaining: [CardID] = []
-  private var history: [(id: CardID, direction: SwipeDirection)] = []
+  private let makeCard: ((CardID) -> SwipeCard)?
+  private var session: [Entry] = []
+  private var remaining: [Entry] = []
+  private var history: [(entry: Entry, direction: SwipeDirection)] = []
   private var cards: [CardID: SwipeCard] = [:]
   private var phase: CardStackPhase = .idle
   private var generation: UInt64 = 0
   private var transition: (generation: UInt64, action: CardAction<CardID>)?
   private var pendingConfiguration: CardStackConfiguration?
-  private var pendingIDs: [CardID]?
+  private var pendingInput: Input?
   private var pendingReconfiguration: Set<CardID> = []
   private var pendingParts = 0
   private var lastNotifiedState: CardStackState<CardID>?
@@ -49,13 +70,31 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
               makeCard: @escaping (CardID) -> SwipeCard) {
     self.configuration = configuration
     self.makeCard = makeCard
-    remaining = snapshot?.remaining ?? []
-    history = snapshot?.history ?? []
+    let entries = (snapshot?.sessionIDs ?? []).map { id in Entry(id: id, makeCard: { makeCard(id) }) }
     super.init(frame: .zero)
+    restore(entries, from: snapshot)
+  }
+
+  init(configuration: CardStackConfiguration, restoring snapshot: Snapshot?, input: Input) {
+    self.configuration = configuration
+    makeCard = nil
+    super.init(frame: .zero)
+    restore(input.entries, from: snapshot)
+  }
+
+  private func restore(_ entries: [Entry], from snapshot: Snapshot?) {
+    session = entries
+    var entriesByID: [CardID: Entry] = [:]
+    for entry in entries { entriesByID[entry.id] = entry }
+    history = (snapshot?.history ?? []).compactMap { previous in
+      entriesByID[previous.id].map { ($0, previous.direction) }
+    }
+    let swiped = Set(history.map { $0.entry.id })
+    remaining = entries.filter { !swiped.contains($0.id) }
   }
 
   @available(*, unavailable)
-  required init?(coder: NSCoder) { fatalError("Use init(configuration:makeCard:)") }
+  required init?(coder: NSCoder) { return nil }
 
   /// Access the currently rendered card without transferring ownership.
   public func card(for id: CardID) -> SwipeCard? { cards[id] }
@@ -64,12 +103,17 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   /// During movement, only the latest valid update is retained.
   @discardableResult
   public func updateCards(_ ids: [CardID]) throws -> CardUpdateResult {
-    try validate(ids)
+    guard let makeCard else { throw CardStackError.contentProviderRequired }
+    return update(try Input(ids.map { id in Entry(id: id, makeCard: { makeCard(id) }) }))
+  }
+
+  @discardableResult
+  func update(_ input: Input) -> CardUpdateResult {
     if phase != .idle {
-      pendingIDs = ids
+      pendingInput = input
       return .deferred
     }
-    apply(ids)
+    apply(input.entries)
     notifyState()
     return .applied
   }
@@ -86,16 +130,25 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
 
   /// Explicitly replaces a session and invalidates its pending work and undo history.
   public func resetCards(_ ids: [CardID]) throws {
-    try validate(ids)
+    guard let makeCard else { throw CardStackError.contentProviderRequired }
+    let input = try Input(ids.map { id in Entry(id: id, makeCard: { makeCard(id) }) })
+    session = input.entries
+    pendingInput = nil
+    reset()
+  }
+
+  /// Restarts the latest valid session, including updates received during movement.
+  public func reset() {
+    if let pendingInput { session = pendingInput.entries }
     let previous = transition
     generation &+= 1
     transition = nil
-    pendingIDs = nil
+    pendingInput = nil
     pendingReconfiguration.removeAll()
     stopAnimations()
     cards.values.forEach { $0.removeFromSuperview() }
     cards.removeAll()
-    remaining = ids
+    remaining = session
     history.removeAll()
     phase = .idle
     render()
@@ -115,10 +168,10 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   @discardableResult
   public func swipe(_ direction: SwipeDirection, animated: Bool = true) -> CardCommandResult<CardID> {
     if let rejection = rejectionForCommand() { return .rejected(rejection) }
-    guard let id = remaining.first else { return .rejected(.empty) }
+    guard let entry = remaining.first else { return .rejected(.empty) }
     guard configuration.allowedDirections.contains(direction) else { return .rejected(.disallowedDirection) }
-    acceptSwipe(id, direction: direction, animated: animated, forced: true)
-    return .accepted(cardID: id)
+    acceptSwipe(entry.id, direction: direction, animated: animated, forced: true)
+    return .accepted(cardID: entry.id)
   }
 
   @discardableResult
@@ -126,13 +179,13 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
     if let rejection = rejectionForCommand() { return .rejected(rejection) }
     guard let previous = history.popLast() else { return .rejected(.nothingToUndo) }
     let previousTransforms = cards.mapValues { $0.transform }
-    remaining.insert(previous.id, at: 0)
-    let token = begin(.undo(cardID: previous.id))
-    guard transition?.generation == token else { return .accepted(cardID: previous.id) }
+    remaining.insert(previous.entry, at: 0)
+    let token = begin(.undo(cardID: previous.entry.id))
+    guard transition?.generation == token else { return .accepted(cardID: previous.entry.id) }
     render()
     for (id, transform) in previousTransforms { cards[id]?.transform = transform }
-    animate(token: token, animated: animated, cardID: previous.id, direction: previous.direction, undo: true)
-    return .accepted(cardID: previous.id)
+    animate(token: token, animated: animated, cardID: previous.entry.id, direction: previous.direction, undo: true)
+    return .accepted(cardID: previous.entry.id)
   }
 
   private func rejectionForCommand() -> CardCommandRejection? {
@@ -141,15 +194,15 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
     return nil
   }
 
-  private func validate(_ ids: [CardID]) throws {
-    guard Set(ids).count == ids.count else { throw CardStackError.duplicateIDs }
-  }
-
-  private func apply(_ ids: [CardID]) {
-    let surviving = Set(ids)
-    history.removeAll { !surviving.contains($0.id) }
-    let swiped = Set(history.map { $0.id })
-    remaining = ids.filter { !swiped.contains($0) }
+  private func apply(_ entries: [Entry]) {
+    session = entries
+    var entriesByID: [CardID: Entry] = [:]
+    for entry in entries { entriesByID[entry.id] = entry }
+    history = history.compactMap { previous in
+      entriesByID[previous.entry.id].map { ($0, previous.direction) }
+    }
+    let swiped = Set(history.map { $0.entry.id })
+    remaining = entries.filter { !swiped.contains($0.id) }
     render()
   }
 
@@ -161,14 +214,15 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
       pendingConfiguration = nil
     }
     let visible = Array(remaining.prefix(configuration.visibleCardCount))
-    var retained = Set(visible)
+    var retained = Set(visible.map(\.id))
     if case .swipe(let id, _)? = transition?.action { retained.insert(id) }
     for id in Array(cards.keys) where !retained.contains(id) {
       cards.removeValue(forKey: id)?.removeFromSuperview()
     }
-    for id in visible.reversed() {
+    for entry in visible.reversed() {
+      let id = entry.id
       if cards[id] == nil {
-        let card = makeCard(id)
+        let card = entry.makeCard()
         card.automaticallyAnimatesGestures = false
         card.delegate = self
         cards[id] = card
@@ -191,7 +245,8 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   }
 
   private func layoutCards() {
-    for (position, id) in remaining.prefix(configuration.visibleCardCount).enumerated() {
+    for (position, entry) in remaining.prefix(configuration.visibleCardCount).enumerated() {
+      let id = entry.id
       guard let card = cards[id] else { continue }
       card.transform = .identity
       card.frame = bounds
@@ -220,8 +275,8 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   }
 
   private func acceptSwipe(_ id: CardID, direction: SwipeDirection, animated: Bool, forced: Bool) {
-    remaining.removeFirst()
-    history.append((id, direction))
+    let entry = remaining.removeFirst()
+    history.append((entry, direction))
     let token = begin(.swipe(cardID: id, direction: direction))
     guard transition?.generation == token else { return }
     let previousTransforms = cards.mapValues { $0.transform }
@@ -251,7 +306,8 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
     let duration = undo ? card.animationOptions.totalReverseSwipeDuration / 2
       : card.animationOptions.totalSwipeDuration / 2
     UIView.animate(withDuration: duration, animations: {
-      for (position, id) in self.remaining.prefix(self.configuration.visibleCardCount).enumerated() {
+      for (position, entry) in self.remaining.prefix(self.configuration.visibleCardCount).enumerated() {
+        let id = entry.id
         if id != cardID { self.cards[id]?.transform = self.cardTransform(at: position) }
       }
     }, completion: completed)
@@ -263,7 +319,7 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
     generation &+= 1
     stopAnimations()
     phase = .idle
-    if let ids = pendingIDs { pendingIDs = nil; apply(ids) }
+    if let input = pendingInput { pendingInput = nil; apply(input.entries) }
     reconfigurePendingCards()
     render()
     notifyEnd(finished.action, outcome: outcome)
@@ -302,7 +358,7 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
       generation &+= 1
       phase = .idle
       stopAnimations()
-      if let ids = pendingIDs { pendingIDs = nil; apply(ids) }
+      if let input = pendingInput { pendingInput = nil; apply(input.entries) }
       reconfigurePendingCards()
       render()
       notifyState()
@@ -313,16 +369,16 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   func cardDidContinueSwipe(_ card: SwipeCard) {}
   func cardDidFinishSwipeAnimation(_ card: SwipeCard) {}
   func cardDidBeginSwipe(_ card: SwipeCard) {
-    guard phase == .idle, let id = remaining.first, cards[id] === card else { return }
+    guard phase == .idle, let entry = remaining.first, cards[entry.id] === card else { return }
     phase = .dragging
     notifyState()
   }
   func cardDidSwipe(_ card: SwipeCard, withDirection direction: SwipeDirection) {
-    guard phase == .dragging, let id = remaining.first, cards[id] === card else { return }
-    acceptSwipe(id, direction: direction, animated: true, forced: false)
+    guard phase == .dragging, let entry = remaining.first, cards[entry.id] === card else { return }
+    acceptSwipe(entry.id, direction: direction, animated: true, forced: false)
   }
   func cardDidCancelSwipe(_ card: SwipeCard) {
-    guard phase == .dragging, let id = remaining.first, cards[id] === card else { return }
+    guard phase == .dragging, let entry = remaining.first, cards[entry.id] === card else { return }
     // No accepted action and no history change for a cancelled gesture. Keep the
     // reset spring, but wait for it before applying data updates or accepting commands.
     generation &+= 1
@@ -340,7 +396,7 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
       guard let self = self, self.generation == token, self.phase == .animating else { return }
       self.generation &+= 1
       self.phase = .idle
-      if let ids = self.pendingIDs { self.pendingIDs = nil; self.apply(ids) }
+      if let input = self.pendingInput { self.pendingInput = nil; self.apply(input.entries) }
       self.reconfigurePendingCards()
       self.render()
       self.notifyState()

@@ -7,7 +7,6 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
   private(set) var stack: CardStackView<Item.ID>?
   private var controller: CardStackController<Item.ID>?
   private var itemsByID: [Item.ID: Item] = [:]
-  private var configuration = CardStackConfiguration()
   private var environment = EnvironmentValues()
   private var content: ((Item) -> Content)?
   private var onActionAccepted: ((CardAction<Item.ID>) -> Void)?
@@ -39,45 +38,48 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
               onActionAccepted: @escaping (CardAction<Item.ID>) -> Void,
               onTransitionEnded: @escaping (CardTransitionEnd<Item.ID>) -> Void,
               onError: @escaping (CardStackPresentationError) -> Void) {
-    let ids = items.map(\.id)
-    guard Set(ids).count == ids.count else {
+    let input: CardStackView<Item.ID>.Input
+    do {
+      input = try CardStackView<Item.ID>.Input(items.map { item in
+        CardStackView<Item.ID>.Entry(id: item.id) { [weak self] in
+          Self.makeCard(item: item, content: content, environment: environment, parent: self)
+        }
+      })
+    } catch {
       DispatchQueue.main.async { onError(.duplicateIDs) }
       return
     }
-    guard self.controller === controller || !controller.isConnected else {
-      DispatchQueue.main.async { onError(.controllerAlreadyConnected) }
-      return
+
+    // Connect the candidate before dismantling a valid presentation.
+    if self.controller !== controller || stack == nil {
+      let candidate = CardStackView<Item.ID>(configuration: configuration,
+                                             restoring: controller.checkpoint, input: input)
+      guard controller.connect(candidate) else {
+        DispatchQueue.main.async { onError(.controllerAlreadyConnected) }
+        return
+      }
+      disconnect()
+      self.controller = controller
+      stack = candidate
+      installStack(candidate)
     }
-    if self.controller !== controller { disconnect() }
-    self.controller = controller
-    itemsByID.removeAll(keepingCapacity: true)
-    for item in items {
-      itemsByID[item.id] = item
-    }
-    self.configuration = configuration
+    var nextItemsByID: [Item.ID: Item] = [:]
+    for item in items { nextItemsByID[item.id] = item }
+    itemsByID = nextItemsByID
     self.environment = environment
     self.content = content
     self.onActionAccepted = onActionAccepted
     self.onTransitionEnded = onTransitionEnded
-    controller.updateItemIDs(ids)
+    controller.updateItemIDs(input.ids)
     needsContentUpdate = true
-    if stack == nil { installStack() }
     // Updates during movement are deferred by the engine; do not interrupt hosting content.
-    do { try stack?.updateCards(ids) }
-    catch { preconditionFailure("Validated card IDs became invalid") }
+    stack?.update(input)
     stack?.updateConfiguration(configuration)
     applyContentIfIdle()
   }
 
-  private func installStack() {
-    guard let controller = controller else { return }
+  private func installStack(_ stack: CardStackView<Item.ID>) {
     loadViewIfNeeded()
-    let stack = CardStackView<Item.ID>(configuration: configuration, restoring: controller.checkpoint) { [weak self] id in
-      guard let self = self else { return SwipeCard() }
-      return self.makeCard(for: id)
-    }
-    guard controller.connect(stack) else { preconditionFailure("Connection must be checked before installation") }
-    self.stack = stack
     view.addSubview(stack)
     stack.frame = view.bounds
     stack.onActionAccepted = { [weak self] action in
@@ -98,16 +100,15 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     }
   }
 
-  private func makeCard(for id: Item.ID) -> SwipeCard {
-    guard let item = itemsByID[id], let content = content else {
-      preconditionFailure("Engine requested an ID outside the visual working set")
-    }
-    let card = SwipeCard()
+  private static func makeCard(item: Item, content: (Item) -> Content,
+                               environment: EnvironmentValues,
+                               parent: CardStackHostingController?) -> SwipeCard {
     let host = UIHostingController(rootView: HostedContent(content: content(item), environment: environment))
     host.view.backgroundColor = .clear
-    addChild(host)
+    let card = HostedSwipeCard(host: host)
+    parent?.addChild(host)
     card.content = host.view
-    hostedCards[ObjectIdentifier(card)] = HostedCard(id: id, card: card, host: host)
+    parent?.hostedCards[ObjectIdentifier(card)] = HostedCard(id: item.id, card: card, host: host)
     return card
   }
 
@@ -177,4 +178,23 @@ private struct HostedContent<Content: View>: View {
   let environment: EnvironmentValues
 
   var body: some View { content.environment(\.self, environment) }
+}
+
+// Retain content while attached even if the parent presentation has gone away.
+@available(iOS 13.0, *)
+private final class HostedSwipeCard<Content: View>: SwipeCard {
+  private var retainedHost: UIHostingController<Content>?
+
+  init(host: UIHostingController<Content>) {
+    retainedHost = host
+    super.init(frame: .zero)
+  }
+
+  override func willMove(toSuperview newSuperview: UIView?) {
+    super.willMove(toSuperview: newSuperview)
+    if newSuperview == nil { retainedHost = nil }
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { return nil }
 }

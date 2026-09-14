@@ -7,7 +7,7 @@ public enum CardCommandResult<CardID: Hashable>: Equatable {
   case rejected(CardCommandRejection)
 }
 public enum CardUpdateResult: Equatable { case applied, deferred }
-public enum CardStackError: Error, Equatable { case duplicateIDs }
+public enum CardStackError: Error, Equatable { case duplicateIDs, contentProviderRequired }
 public enum CardTransitionOutcome: Equatable { case completed, settledOffscreen, superseded }
 public enum CardAction<CardID: Hashable>: Equatable {
   case swipe(cardID: CardID, direction: SwipeDirection)

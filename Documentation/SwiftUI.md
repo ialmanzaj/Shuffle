@@ -82,6 +82,9 @@ Items describe the **full visual working set**, including swiped IDs that should
 remain undoable. Removing an ID removes its undo eligibility. Same-ID updates
 preserve progress; reset is always explicit. IDs must be unique. Invalid inputs
 report an error asynchronously and leave the previous valid presentation intact.
+Input validation finishes before connecting or changing the active presentation.
+Internally, each ID travels with its card factory, including while deferred; card
+creation never looks up data in a separately updated presentation dictionary.
 
 `Identifiable` is sufficient; `Equatable` is not required. Existing hosting
 controllers receive updated root values rather than replacement SwipeCards.
@@ -91,7 +94,8 @@ The content closure and environment are refreshed on SwiftUI updates; applicatio
 remain responsible for making their own model changes observable to SwiftUI.
 
 Data updates received during movement are deferred by the engine. Hosting content
-and configuration changes are applied at rest. Configuration changes update the existing engine at rest, preserving history and
+and configuration changes are applied at rest. Configuration changes update the
+existing engine at rest, preserving history and
 the local SwiftUI state of retained cards. Cards removed by a lower visible count
 release their content; their local state is not retained. The outgoing host
 remains attached until Shuffle removes its card. The adapter handles UIKit child
@@ -132,8 +136,10 @@ Never commit those mutations. Simulator assertions do not establish pixel-perfec
 rendering, physical-device performance, or compatibility across all supported OS
 versions; validate those separately before a release.
 
-Verified on 2026-09-14 with Xcode 26.6 and an iOS 26.5 simulator: 38 tests passed
-(17 adapter, 19 identity-engine, 2 legacy compatibility), zero failures. The motion
-negative control failed its intermediate-position assertion; the restoration
-negative control failed position and undo assertions. Both mutations were restored
-and all 38 tests passed again. Older runtime versions and CocoaPods were not tested.
+Verified on 2026-09-14 with Xcode 26.6 and an iOS 26.5 simulator: 48 tests passed
+(22 adapter, 24 identity-engine, 2 legacy compatibility), zero failures. Tests also
+cover resetting the latest valid session, restored-session reset, factories from
+deferred input and rejecting a controller replacement without losing the original.
+Earlier negative controls detected disabled motion, omitted restoration, lost
+terminal events and reset local state; those mutations were restored. Older runtime
+versions and CocoaPods integration were not tested.

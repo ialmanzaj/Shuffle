@@ -32,9 +32,7 @@ public final class CardStackController<ID: Hashable>: @preconcurrency Observable
   /// Starts over with the latest valid items; never replays accepted actions.
   public func reset() {
     if let engine = engine {
-      // IDs were validated before becoming the current input.
-      do { try engine.resetCards(itemIDs) }
-      catch { preconditionFailure("Validated card IDs became invalid") }
+      engine.reset()
     } else {
       checkpoint = nil
       detachedState = CardStackState(currentCardID: itemIDs.first, remainingCardIDs: itemIDs, canUndo: false, phase: .idle)

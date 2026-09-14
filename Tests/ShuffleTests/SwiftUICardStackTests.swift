@@ -121,6 +121,26 @@ final class SwiftUICardStackTests: XCTestCase {
     XCTAssertEqual(fixture.controller.state.remainingCardIDs, [1, 2, 3])
   }
 
+  func testRejectedControllerReplacementPreservesOriginalPresentation() async {
+    let first = Fixture(); defer { first.close() }
+    let occupied = Fixture(); defer { occupied.close() }
+    let original = first.host.stack
+    var errors: [CardStackPresentationError] = []
+    first.host.update(items: [Item(id: 9, value: "replacement")], controller: occupied.controller,
+                      configuration: .init(), environment: EnvironmentValues(),
+                      content: { Probe(item: $0, report: { _ in }) },
+                      onActionAccepted: { _ in XCTFail("Rejected presentation cannot receive events") },
+                      onTransitionEnded: { _ in XCTFail("Rejected presentation cannot receive events") },
+                      onError: { errors.append($0) })
+    await framesUntil("replacement rejected") { errors == [.controllerAlreadyConnected] }
+    XCTAssertTrue(first.host.stack === original)
+    XCTAssertNotNil(original?.window)
+    first.controller.swipe(.right, animated: false)
+    await framesUntil("original callbacks still active") { first.events.count == 2 }
+    XCTAssertEqual(first.controller.state.currentCardID, 2)
+    XCTAssertEqual(occupied.controller.state.currentCardID, 1)
+  }
+
   func testSecondPresentationCannotStealController() async throws {
     let fixture = Fixture(); defer { fixture.close() }
     let other = Fixture(controller: fixture.controller); defer { other.close() }
