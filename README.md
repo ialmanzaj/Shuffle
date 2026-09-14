@@ -246,3 +246,9 @@ Made with ❤️ by <a href="https://github.com/mac-gallagher">Mac Gallagher</a>
 
 For stable card IDs, explicit command results, transition completion and incremental updates,
 see [CardStackView](Documentation/CardStackView.md). The original SwipeCardStack API remains available.
+
+### SwiftUI (Swift Package, iOS 13+)
+
+Use `CardStack` with a stable `CardStackController` to render SwiftUI content with
+Shuffle's UIKit animation engine. See [SwiftUI integration](Documentation/SwiftUI.md)
+for command results, reset/restoration, hosting lifetime and callback contracts.
