@@ -65,6 +65,26 @@ final class CardStackViewTests: XCTestCase {
     stack.onActionAccepted = nil
   }
 
+  func testSettlementCreatesPendingReconfiguredCardOnlyOnce() async throws {
+    var creations: [Int: Int] = [:]
+    let (window, _) = fixture(); defer { window.isHidden = true }
+    let stack = CardStackView<Int> { id in
+      creations[id, default: 0] += 1
+      return SwipeCard()
+    }
+    window.rootViewController!.view.addSubview(stack)
+    stack.frame = CGRect(x: 0, y: 0, width: 350, height: 500)
+    try stack.updateCards([1, 2])
+    let completed = expectation(description: "swipe completes")
+    stack.onTransitionEnded = { _ in completed.fulfill() }
+    stack.swipe(.left)
+    try stack.updateCards([2, 3])
+    stack.reconfigureCards([3])
+    await fulfillment(of: [completed], timeout: 5)
+    XCTAssertEqual(creations[3], 1, "Pending content should not be created and immediately discarded")
+    XCTAssertEqual(stack.state.remainingCardIDs, [2, 3])
+  }
+
   func testConfigurationPreservesRetainedCardsAndHistory() throws {
     let (window, stack) = fixture(); defer { window.isHidden = true }
     try stack.updateCards([1, 2, 3, 4])

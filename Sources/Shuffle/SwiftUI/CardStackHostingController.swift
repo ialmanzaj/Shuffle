@@ -18,7 +18,6 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     let id: Item.ID
     weak var card: SwipeCard?
     let host: UIHostingController<HostedContent<Content>>
-    var containmentCompleted = false
   }
   private var hostedCards: [ObjectIdentifier: HostedCard] = [:]
 
@@ -70,11 +69,9 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     self.content = content
     self.onActionAccepted = onActionAccepted
     self.onTransitionEnded = onTransitionEnded
-    controller.updateItemIDs(input.ids)
     needsContentUpdate = true
     // Updates during movement are deferred by the engine; do not interrupt hosting content.
-    stack?.update(input)
-    stack?.updateConfiguration(configuration)
+    stack?.update(input, configuration: configuration)
     applyContentIfIdle()
   }
 
@@ -89,13 +86,11 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     }
     stack.onTransitionEnded = { [weak self] end in
       guard let self = self else { return }
-      self.reconcileHostedCards()
       if let callback = self.onTransitionEnded { DispatchQueue.main.async { callback(end) } }
     }
     stack.onStateChanged = { [weak self] _ in
       guard let self = self else { return }
       self.controller?.notifyChange()
-      self.reconcileHostedCards()
       self.applyContentIfIdle()
     }
   }
@@ -109,6 +104,7 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     parent?.addChild(host)
     card.content = host.view
     parent?.hostedCards[ObjectIdentifier(card)] = HostedCard(id: item.id, card: card, host: host)
+    card.onRemoval = { [weak parent] key in parent?.hostedCards.removeValue(forKey: key) }
     return card
   }
 
@@ -116,7 +112,6 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     guard !isApplying, let stack = stack, stack.state.phase == .idle else { return }
     isApplying = true
     defer { isApplying = false }
-    reconcileHostedCards()
     guard needsContentUpdate, let content = content else { return }
     needsContentUpdate = false
     // Reuse hosts instead of replacing SwipeCards. EnvironmentValues cannot be compared
@@ -124,21 +119,6 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     for hosted in hostedCards.values {
       guard let item = itemsByID[hosted.id] else { continue }
       hosted.host.rootView = HostedContent(content: content(item), environment: environment)
-    }
-  }
-
-  private func reconcileHostedCards() {
-    for (key, var hosted) in hostedCards {
-      if hosted.card?.superview !== stack {
-        hosted.host.willMove(toParent: nil)
-        hosted.host.view.removeFromSuperview()
-        hosted.host.removeFromParent()
-        hostedCards.removeValue(forKey: key)
-      } else if !hosted.containmentCompleted {
-        hosted.host.didMove(toParent: self)
-        hosted.containmentCompleted = true
-        hostedCards[key] = hosted
-      }
     }
   }
 
@@ -151,11 +131,7 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     stack.onTransitionEnded = nil
     stack.onStateChanged = nil
     self.stack = nil
-    for hosted in hostedCards.values {
-      hosted.host.willMove(toParent: nil)
-      hosted.host.view.removeFromSuperview()
-      hosted.host.removeFromParent()
-    }
+    for hosted in Array(hostedCards.values) { hosted.card?.removeFromSuperview() }
     hostedCards.removeAll()
   }
 
@@ -182,7 +158,8 @@ private struct HostedContent<Content: View>: View {
 
 // Retain content while attached even if the parent presentation has gone away.
 @available(iOS 13.0, *)
-private final class HostedSwipeCard<Content: View>: SwipeCard {
+internal final class HostedSwipeCard<Content: View>: SwipeCard {
+  var onRemoval: ((ObjectIdentifier) -> Void)?
   private var retainedHost: UIHostingController<Content>?
 
   init(host: UIHostingController<Content>) {
@@ -190,9 +167,23 @@ private final class HostedSwipeCard<Content: View>: SwipeCard {
     super.init(frame: .zero)
   }
 
+  override func didMoveToSuperview() {
+    super.didMoveToSuperview()
+    // The engine has now inserted this card into its hierarchy; containment is complete.
+    if superview != nil, let host = retainedHost, let parent = host.parent {
+      host.didMove(toParent: parent)
+    }
+  }
+
   override func willMove(toSuperview newSuperview: UIView?) {
     super.willMove(toSuperview: newSuperview)
-    if newSuperview == nil { retainedHost = nil }
+    guard newSuperview == nil, let host = retainedHost else { return }
+    host.willMove(toParent: nil)
+    host.view.removeFromSuperview()
+    host.removeFromParent()
+    retainedHost = nil
+    onRemoval?(ObjectIdentifier(self))
+    onRemoval = nil
   }
 
   @available(*, unavailable)

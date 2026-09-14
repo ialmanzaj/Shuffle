@@ -83,6 +83,8 @@ remain undoable. Removing an ID removes its undo eligibility. Same-ID updates
 preserve progress; reset is always explicit. IDs must be unique. Invalid inputs
 report an error asynchronously and leave the previous valid presentation intact.
 Input validation finishes before connecting or changing the active presentation.
+A SwiftUI update applies its input and configuration together, so an intermediate
+layout cannot discard a card that belongs to the final visible set.
 Internally, each ID travels with its card factory, including while deferred; card
 creation never looks up data in a separately updated presentation dictionary.
 
@@ -99,7 +101,8 @@ existing engine at rest, preserving history and
 the local SwiftUI state of retained cards. Cards removed by a lower visible count
 release their content; their local state is not retained. The outgoing host
 remains attached until Shuffle removes its card. The adapter handles UIKit child
-containment and removes children on teardown. Styling inside the content belongs
+containment when each card is inserted and removes children when their cards leave
+the hierarchy. Settlement reconciles pending data before rendering once. Styling inside the content belongs
 to the client; the adapter does not reproduce any application's CALayer shadows.
 
 ## Callback timing
@@ -136,10 +139,12 @@ Never commit those mutations. Simulator assertions do not establish pixel-perfec
 rendering, physical-device performance, or compatibility across all supported OS
 versions; validate those separately before a release.
 
-Verified on 2026-09-14 with Xcode 26.6 and an iOS 26.5 simulator: 48 tests passed
-(22 adapter, 24 identity-engine, 2 legacy compatibility), zero failures. Tests also
+Verified on 2026-09-14 with Xcode 26.6 and an iOS 26.5 simulator: 52 tests passed
+(25 adapter, 25 identity-engine, 2 legacy compatibility), zero failures. Tests also
 cover resetting the latest valid session, restored-session reset, factories from
 deferred input and rejecting a controller replacement without losing the original.
+The reorder/expansion and pending-reconfiguration tests failed on the preceding
+implementation, detecting lost local state and duplicate card creation.
 Earlier negative controls detected disabled motion, omitted restoration, lost
 terminal events and reset local state; those mutations were restored. Older runtime
 versions and CocoaPods integration were not tested.

@@ -7,6 +7,54 @@ import XCTest
 @available(iOS 13.0, *)
 @MainActor
 final class SwiftUICardStackTests: XCTestCase {
+  func testHostedCardContainmentCompletesOnInsertionAndRemovesOnce() throws {
+    let parent = UIViewController()
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+    window.rootViewController = parent
+    window.isHidden = false
+    defer { window.isHidden = true; window.rootViewController = nil }
+    var hosts: [Int: LifecycleHostingController] = [:]
+    let stack = CardStackView<Int> { id in
+      let host = LifecycleHostingController(rootView: Text("Card \(id)"))
+      hosts[id] = host
+      let card = HostedSwipeCard(host: host)
+      parent.addChild(host)
+      card.content = host.view
+      return card
+    }
+    parent.view.addSubview(stack)
+    stack.frame = CGRect(x: 0, y: 0, width: 350, height: 500)
+    try stack.updateCards([1, 2, 3])
+    let first = try XCTUnwrap(hosts[1])
+    XCTAssertEqual(first.events, ["willAdd", "didAdd"])
+    stack.swipe(.right)
+    let third = try XCTUnwrap(hosts[3])
+    XCTAssertEqual(third.events, ["willAdd", "didAdd"], "Containment cannot wait for animation completion")
+    stack.reset()
+    XCTAssertEqual(first.events, ["willAdd", "didAdd", "willRemove", "didRemove"])
+    XCTAssertEqual(third.events, ["willAdd", "didAdd", "willRemove", "didRemove"])
+    let replacement = try XCTUnwrap(hosts[1])
+    stack.updateConfiguration(.init())
+    stack.layoutIfNeeded()
+    XCTAssertEqual(replacement.events, ["willAdd", "didAdd"])
+    try stack.updateCards([])
+    XCTAssertTrue(parent.children.isEmpty)
+  }
+
+  func testDetachedSnapshotMatchesMountedStateAndResetRemount() async {
+    let fixture = Fixture(); defer { fixture.close() }
+    fixture.controller.swipe(.left, animated: false)
+    let mountedState = fixture.controller.state
+    fixture.host.disconnect()
+    XCTAssertEqual(fixture.controller.state, mountedState)
+    fixture.controller.reset()
+    let resetState = fixture.controller.state
+    XCTAssertEqual(resetState.remainingCardIDs, [1, 2, 3])
+    XCTAssertFalse(resetState.canUndo)
+    fixture.remount()
+    XCTAssertEqual(fixture.controller.state, resetState)
+  }
+
   func testDetachedCommandsAndExplicitReset() {
     let controller = CardStackController<Int>()
     XCTAssertEqual(controller.swipe(.right), .rejected(.notVisible))
@@ -173,6 +221,31 @@ final class SwiftUICardStackTests: XCTestCase {
     XCTAssertEqual(fixture.controller.state.remainingCardIDs, [4, 5, 6])
     XCTAssertNotNil(fixture.host.stack?.card(for: 6))
     XCTAssertEqual(fixture.host.children.count, 3)
+  }
+
+  func testReorderingWhileExpandingPreservesLocalStateAndCardIdentity() async throws {
+    let controller = CardStackController<Int>()
+    let host = CardStackHostingController<Item, StatefulProbe>()
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+    window.rootViewController = host
+    window.isHidden = false
+    defer { host.disconnect(); window.isHidden = true; window.rootViewController = nil }
+    var reports: [String: UUID] = [:]
+    func update(_ ids: [Int], version: String, count: Int) {
+      host.update(items: ids.map { Item(id: $0, value: "\(version):\($0)") }, controller: controller,
+                  configuration: .init(visibleCardCount: count), environment: EnvironmentValues(),
+                  content: { StatefulProbe(title: $0.value, report: { reports[$0] = $1 }) },
+                  onActionAccepted: { _ in }, onTransitionEnded: { _ in },
+                  onError: { _ in XCTFail("Valid presentation") })
+      host.view.layoutIfNeeded()
+    }
+    update([1, 2, 3], version: "before", count: 2)
+    await framesUntil("initial second card state") { reports["before:2"] != nil }
+    let original = try XCTUnwrap(host.stack?.card(for: 2))
+    update([3, 1, 2], version: "after", count: 3)
+    await framesUntil("updated second card state") { reports["after:2"] != nil }
+    XCTAssertTrue(host.stack?.card(for: 2) === original)
+    XCTAssertEqual(reports["before:2"], reports["after:2"])
   }
 
   func testArrivalAndConfigurationDuringMovementAreDeferred() async throws {
@@ -483,5 +556,19 @@ private struct ControllerProbe: View {
   let report: (String) -> Void
   var body: some View {
     Reporter(value: "\(controller.state.currentCardID ?? -1):\(controller.state.canUndo)", report: report)
+  }
+}
+
+@available(iOS 13.0, *)
+@MainActor
+private final class LifecycleHostingController: UIHostingController<Text> {
+  var events: [String] = []
+  override func willMove(toParent parent: UIViewController?) {
+    super.willMove(toParent: parent)
+    events.append(parent == nil ? "willRemove" : "willAdd")
+  }
+  override func didMove(toParent parent: UIViewController?) {
+    super.didMove(toParent: parent)
+    events.append(parent == nil ? "didRemove" : "didAdd")
   }
 }

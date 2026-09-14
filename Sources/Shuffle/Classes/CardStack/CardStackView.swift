@@ -8,6 +8,17 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   public struct Snapshot {
     fileprivate let sessionIDs: [CardID]
     fileprivate let history: [(id: CardID, direction: SwipeDirection)]
+
+    static var empty: Snapshot { Snapshot(sessionIDs: [], history: []) }
+
+    var state: CardStackState<CardID> {
+      let swiped = Set(history.map(\.id))
+      let remaining = sessionIDs.filter { !swiped.contains($0) }
+      return CardStackState(currentCardID: remaining.first, remainingCardIDs: remaining,
+                            canUndo: !history.isEmpty, phase: .idle)
+    }
+
+    func resettingHistory() -> Snapshot { Snapshot(sessionIDs: sessionIDs, history: []) }
   }
 
   // AIDEV-NOTE: Each entry carries its own content factory. Deferred input cannot
@@ -19,7 +30,6 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
 
   struct Input {
     let entries: [Entry]
-    var ids: [CardID] { entries.map(\.id) }
 
     init(_ entries: [Entry]) throws {
       var seen: Set<CardID> = []
@@ -113,9 +123,17 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
       pendingInput = input
       return .deferred
     }
-    apply(input.entries)
+    reconcileSession(with: input.entries)
+    render()
     notifyState()
     return .applied
+  }
+
+  /// A SwiftUI update applies its data and layout together, with no intermediate presentation.
+  @discardableResult
+  func update(_ input: Input, configuration: CardStackConfiguration) -> CardUpdateResult {
+    pendingConfiguration = configuration
+    return update(input)
   }
 
   /// Applies layout and gesture policy without replacing retained cards or history.
@@ -194,7 +212,7 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
     return nil
   }
 
-  private func apply(_ entries: [Entry]) {
+  private func reconcileSession(with entries: [Entry]) {
     session = entries
     var entriesByID: [CardID: Entry] = [:]
     for entry in entries { entriesByID[entry.id] = entry }
@@ -203,7 +221,6 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
     }
     let swiped = Set(history.map { $0.entry.id })
     remaining = entries.filter { !swiped.contains($0.id) }
-    render()
   }
 
   private func render() {
@@ -319,11 +336,20 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
     generation &+= 1
     stopAnimations()
     phase = .idle
-    if let input = pendingInput { pendingInput = nil; apply(input.entries) }
-    reconfigurePendingCards()
-    render()
+    applyPendingChanges()
     notifyEnd(finished.action, outcome: outcome)
     notifyState()
+  }
+
+  private func applyPendingChanges() {
+    // AIDEV-NOTE: Reconcile all pending data before creating views. Rendering inside
+    // reconciliation would create cards that pending reconfiguration immediately discards.
+    if let input = pendingInput {
+      pendingInput = nil
+      reconcileSession(with: input.entries)
+    }
+    reconfigurePendingCards()
+    render()
   }
 
   private func reconfigurePendingCards() {
@@ -358,9 +384,7 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
       generation &+= 1
       phase = .idle
       stopAnimations()
-      if let input = pendingInput { pendingInput = nil; apply(input.entries) }
-      reconfigurePendingCards()
-      render()
+      applyPendingChanges()
       notifyState()
     }
   }
@@ -396,9 +420,7 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
       guard let self = self, self.generation == token, self.phase == .animating else { return }
       self.generation &+= 1
       self.phase = .idle
-      if let input = self.pendingInput { self.pendingInput = nil; self.apply(input.entries) }
-      self.reconfigurePendingCards()
-      self.render()
+      self.applyPendingChanges()
       self.notifyState()
     })
   }

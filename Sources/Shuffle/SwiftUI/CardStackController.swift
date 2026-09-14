@@ -9,13 +9,12 @@ public final class CardStackController<ID: Hashable>: @preconcurrency Observable
   public let objectWillChange = ObservableObjectPublisher()
 
   /// The engine is authoritative while mounted; detached state is a value checkpoint.
-  public var state: CardStackState<ID> { engine?.state ?? detachedState }
+  public var state: CardStackState<ID> { engine?.state ?? detachedSession.state }
 
   private weak var engine: CardStackView<ID>?
-  private var detachedState = CardStackState<ID>(currentCardID: nil, remainingCardIDs: [], canUndo: false, phase: .idle)
-  private var itemIDs: [ID] = []
+  private var detachedSession: CardStackView<ID>.Snapshot = .empty
   private var notificationScheduled = false
-  internal private(set) var checkpoint: CardStackView<ID>.Snapshot?
+  internal var checkpoint: CardStackView<ID>.Snapshot { detachedSession }
 
   public init() {}
 
@@ -34,8 +33,7 @@ public final class CardStackController<ID: Hashable>: @preconcurrency Observable
     if let engine = engine {
       engine.reset()
     } else {
-      checkpoint = nil
-      detachedState = CardStackState(currentCardID: itemIDs.first, remainingCardIDs: itemIDs, canUndo: false, phase: .idle)
+      detachedSession = detachedSession.resettingHistory()
     }
     notifyChange()
   }
@@ -43,19 +41,15 @@ public final class CardStackController<ID: Hashable>: @preconcurrency Observable
   internal func connect(_ stack: CardStackView<ID>) -> Bool {
     guard engine == nil || engine === stack else { return false }
     engine = stack
-    checkpoint = nil
     notifyChange()
     return true
   }
 
   internal var isConnected: Bool { engine != nil }
 
-  internal func updateItemIDs(_ ids: [ID]) { itemIDs = ids }
-
   internal func disconnect(_ stack: CardStackView<ID>) {
     guard engine === stack else { return }
-    checkpoint = stack.snapshot
-    detachedState = stack.state
+    detachedSession = stack.snapshot
     engine = nil
     notifyChange()
   }
