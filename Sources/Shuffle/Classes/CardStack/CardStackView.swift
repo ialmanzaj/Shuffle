@@ -4,6 +4,21 @@ import UIKit
 /// Legacy SwipeCardStack remains available with its existing index-based API.
 @MainActor
 public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
+  /// Value-only checkpoint. Restoring it never replays accepted actions or animations.
+  public struct Snapshot {
+    fileprivate let remaining: [CardID]
+    fileprivate let history: [(id: CardID, direction: SwipeDirection)]
+  }
+
+  /// Captures accepted actions, including the latest deferred data update.
+  public var snapshot: Snapshot {
+    guard let ids = pendingIDs else { return Snapshot(remaining: remaining, history: history) }
+    let surviving = Set(ids)
+    let retainedHistory = history.filter { surviving.contains($0.id) }
+    let swiped = Set(retainedHistory.map { $0.id })
+    return Snapshot(remaining: ids.filter { !swiped.contains($0) }, history: retainedHistory)
+  }
+
   public let configuration: CardStackConfiguration
   public var onActionAccepted: ((CardAction<CardID>) -> Void)?
   public var onTransitionEnded: ((CardTransitionEnd<CardID>) -> Void)?
@@ -29,9 +44,12 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   private var detaching = false
 
   public init(configuration: CardStackConfiguration = .init(),
+              restoring snapshot: Snapshot? = nil,
               makeCard: @escaping (CardID) -> SwipeCard) {
     self.configuration = configuration
     self.makeCard = makeCard
+    remaining = snapshot?.remaining ?? []
+    history = snapshot?.history ?? []
     super.init(frame: .zero)
   }
 

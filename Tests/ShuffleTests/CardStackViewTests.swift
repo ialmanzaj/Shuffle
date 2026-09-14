@@ -16,6 +16,51 @@ final class CardStackViewTests: XCTestCase {
     return (window, stack)
   }
 
+  func testSnapshotRestoresPositionAndUndoWithoutReplayingActions() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3])
+    stack.swipe(.left, animated: false)
+    stack.swipe(.right, animated: false)
+    let restored = CardStackView<Int>(restoring: stack.snapshot) { _ in SwipeCard() }
+    var actions: [CardAction<Int>] = []
+    restored.onActionAccepted = { actions.append($0) }
+    window.rootViewController!.view.addSubview(restored)
+    restored.frame = stack.frame
+    try restored.updateCards([1, 2, 3])
+    XCTAssertEqual(restored.state.currentCardID, 3)
+    XCTAssertTrue(restored.state.canUndo)
+    XCTAssertTrue(actions.isEmpty)
+    XCTAssertEqual(restored.undo(animated: false), .accepted(cardID: 2))
+    XCTAssertEqual(restored.undo(animated: false), .accepted(cardID: 1))
+    XCTAssertEqual(restored.state.remainingCardIDs, [1, 2, 3])
+    XCTAssertEqual(restored.undo(), .rejected(.nothingToUndo))
+  }
+
+  func testSnapshotDuringMotionIncludesLatestDeferredIDs() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2])
+    stack.swipe(.left)
+    XCTAssertEqual(try stack.updateCards([1, 3, 2]), .deferred)
+    let restored = CardStackView<Int>(restoring: stack.snapshot) { _ in SwipeCard() }
+    window.rootViewController!.view.addSubview(restored)
+    restored.frame = stack.frame
+    try restored.updateCards([1, 3, 2])
+    XCTAssertEqual(restored.state.remainingCardIDs, [3, 2])
+    XCTAssertEqual(restored.state.phase, .idle)
+    XCTAssertEqual(restored.undo(animated: false), .accepted(cardID: 1))
+  }
+
+  func testSnapshotDropsHistoryRemovedByDeferredUpdate() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2])
+    stack.swipe(.right)
+    try stack.updateCards([2, 3])
+    let restored = CardStackView<Int>(restoring: stack.snapshot) { _ in SwipeCard() }
+    try restored.updateCards([2, 3])
+    XCTAssertFalse(restored.state.canUndo)
+    XCTAssertEqual(restored.state.currentCardID, 2)
+  }
+
   func testResetAndUpdateHaveDifferentHistorySemantics() throws {
     let (window, stack) = fixture(); defer { window.isHidden = true }
     try stack.resetCards([1, 2, 3])
