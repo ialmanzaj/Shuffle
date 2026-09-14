@@ -16,6 +16,151 @@ final class CardStackViewTests: XCTestCase {
     return (window, stack)
   }
 
+  func testResetUsesLatestValidSessionIncludingDeferredInput() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3])
+    stack.swipe(.left)
+    try stack.updateCards([1, 4, 2])
+    XCTAssertThrowsError(try stack.updateCards([9, 9]))
+    stack.reset()
+    XCTAssertEqual(stack.state.remainingCardIDs, [1, 4, 2])
+    XCTAssertFalse(stack.state.canUndo)
+    stack.swipe(.right, animated: false)
+    stack.reset()
+    XCTAssertEqual(stack.state.remainingCardIDs, [1, 4, 2])
+  }
+
+  func testRestoredSessionCanResetWithoutAnotherDataUpdate() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3])
+    stack.swipe(.left, animated: false)
+    let restored = CardStackView<Int>(restoring: stack.snapshot) { _ in SwipeCard() }
+    restored.reset()
+    XCTAssertEqual(restored.state.remainingCardIDs, [1, 2, 3])
+    XCTAssertFalse(restored.state.canUndo)
+  }
+
+  func testDeferredInputRetainsItsOwnCardFactories() throws {
+    var created: [String] = []
+    func input(_ version: String) throws -> CardStackView<Int>.Input {
+      try .init([1, 2, 3].map { id in
+        .init(id: id, makeCard: { created.append("\(version):\(id)"); return SwipeCard() })
+      })
+    }
+    let old = try input("old")
+    let next = try input("next")
+    let (window, _) = fixture(); defer { window.isHidden = true }
+    let stack = CardStackView<Int>(configuration: .init(), restoring: nil, input: old)
+    window.rootViewController!.view.addSubview(stack)
+    stack.frame = CGRect(x: 0, y: 0, width: 350, height: 500)
+    stack.update(old)
+    stack.onActionAccepted = { _ in stack.update(next) }
+    stack.swipe(.right)
+    XCTAssertTrue(created.contains("old:3"), "In-flight rendering must use the active content version")
+    XCTAssertFalse(created.contains("next:3"))
+    stack.reset()
+    XCTAssertTrue(created.contains("next:1"))
+    XCTAssertTrue(created.contains("next:2"))
+    XCTAssertEqual(stack.state.remainingCardIDs, [1, 2, 3])
+    stack.onActionAccepted = nil
+  }
+
+  func testSettlementCreatesPendingReconfiguredCardOnlyOnce() async throws {
+    var creations: [Int: Int] = [:]
+    let (window, _) = fixture(); defer { window.isHidden = true }
+    let stack = CardStackView<Int> { id in
+      creations[id, default: 0] += 1
+      return SwipeCard()
+    }
+    window.rootViewController!.view.addSubview(stack)
+    stack.frame = CGRect(x: 0, y: 0, width: 350, height: 500)
+    try stack.updateCards([1, 2])
+    let completed = expectation(description: "swipe completes")
+    stack.onTransitionEnded = { _ in completed.fulfill() }
+    stack.swipe(.left)
+    try stack.updateCards([2, 3])
+    stack.reconfigureCards([3])
+    await fulfillment(of: [completed], timeout: 5)
+    XCTAssertEqual(creations[3], 1, "Pending content should not be created and immediately discarded")
+    XCTAssertEqual(stack.state.remainingCardIDs, [2, 3])
+  }
+
+  func testConfigurationPreservesRetainedCardsAndHistory() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3, 4])
+    stack.swipe(.left, animated: false)
+    let card = try XCTUnwrap(stack.card(for: 2))
+    let configuration = CardStackConfiguration(visibleCardCount: 3, scaleStep: 0.1,
+                                             verticalSpacing: 20, allowedDirections: [.right])
+    XCTAssertEqual(stack.updateConfiguration(configuration), .applied)
+    XCTAssertTrue(stack.card(for: 2) === card)
+    XCTAssertEqual(stack.configuration, configuration)
+    XCTAssertNotNil(stack.card(for: 4))
+    XCTAssertEqual(card.swipeDirections, [.right])
+    XCTAssertTrue(stack.state.canUndo)
+    XCTAssertEqual(stack.undo(animated: false), .accepted(cardID: 1))
+  }
+
+  func testLatestConfigurationAppliesWhenDragSettlesOffscreen() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3])
+    let card = try XCTUnwrap(stack.card(for: 1))
+    stack.cardDidBeginSwipe(card)
+    XCTAssertEqual(stack.updateConfiguration(.init(verticalSpacing: 10)), .deferred)
+    let latest = CardStackConfiguration(verticalSpacing: 30)
+    XCTAssertEqual(stack.updateConfiguration(latest), .deferred)
+    XCTAssertEqual(stack.configuration.verticalSpacing, 0)
+    stack.removeFromSuperview()
+    XCTAssertEqual(stack.configuration, latest)
+    XCTAssertTrue(stack.card(for: 1) === card)
+    XCTAssertEqual(stack.state.phase, .idle)
+  }
+
+  func testSnapshotRestoresPositionAndUndoWithoutReplayingActions() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3])
+    stack.swipe(.left, animated: false)
+    stack.swipe(.right, animated: false)
+    let restored = CardStackView<Int>(restoring: stack.snapshot) { _ in SwipeCard() }
+    var actions: [CardAction<Int>] = []
+    restored.onActionAccepted = { actions.append($0) }
+    window.rootViewController!.view.addSubview(restored)
+    restored.frame = stack.frame
+    try restored.updateCards([1, 2, 3])
+    XCTAssertEqual(restored.state.currentCardID, 3)
+    XCTAssertTrue(restored.state.canUndo)
+    XCTAssertTrue(actions.isEmpty)
+    XCTAssertEqual(restored.undo(animated: false), .accepted(cardID: 2))
+    XCTAssertEqual(restored.undo(animated: false), .accepted(cardID: 1))
+    XCTAssertEqual(restored.state.remainingCardIDs, [1, 2, 3])
+    XCTAssertEqual(restored.undo(), .rejected(.nothingToUndo))
+  }
+
+  func testSnapshotDuringMotionIncludesLatestDeferredIDs() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2])
+    stack.swipe(.left)
+    XCTAssertEqual(try stack.updateCards([1, 3, 2]), .deferred)
+    let restored = CardStackView<Int>(restoring: stack.snapshot) { _ in SwipeCard() }
+    window.rootViewController!.view.addSubview(restored)
+    restored.frame = stack.frame
+    try restored.updateCards([1, 3, 2])
+    XCTAssertEqual(restored.state.remainingCardIDs, [3, 2])
+    XCTAssertEqual(restored.state.phase, .idle)
+    XCTAssertEqual(restored.undo(animated: false), .accepted(cardID: 1))
+  }
+
+  func testSnapshotDropsHistoryRemovedByDeferredUpdate() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2])
+    stack.swipe(.right)
+    try stack.updateCards([2, 3])
+    let restored = CardStackView<Int>(restoring: stack.snapshot) { _ in SwipeCard() }
+    try restored.updateCards([2, 3])
+    XCTAssertFalse(restored.state.canUndo)
+    XCTAssertEqual(restored.state.currentCardID, 2)
+  }
+
   func testResetAndUpdateHaveDifferentHistorySemantics() throws {
     let (window, stack) = fixture(); defer { window.isHidden = true }
     try stack.resetCards([1, 2, 3])

@@ -86,3 +86,13 @@ Validation recorded with Xcode 26.6 / iOS 26.5: 18 package tests pass. A negativ
 that disables animation fails both swipe and undo presentation-motion assertions; restoring
 animation returns the suite to passing. These results cover the package tests above, not the
 separate legacy CocoaPods/Quick example test project.
+
+## Recreating a view
+
+Keep `stack.snapshot` with the presentation session. It contains values only: remaining
+IDs and accepted swipe history with directions. Initialize the replacement using
+`CardStackView(configuration: configuration, restoring: snapshot, makeCard: factory)`,
+then call `updateCards` with the current session IDs once its content factory is ready.
+Restoration starts idle and does not replay callbacks or animations. A checkpoint taken
+while moving includes the accepted action and latest deferred ID update; it does not
+preserve partial presentation-layer progress. An update still prunes removed history.

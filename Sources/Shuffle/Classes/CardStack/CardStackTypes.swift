@@ -7,7 +7,7 @@ public enum CardCommandResult<CardID: Hashable>: Equatable {
   case rejected(CardCommandRejection)
 }
 public enum CardUpdateResult: Equatable { case applied, deferred }
-public enum CardStackError: Error, Equatable { case duplicateIDs }
+public enum CardStackError: Error, Equatable { case duplicateIDs, contentProviderRequired }
 public enum CardTransitionOutcome: Equatable { case completed, settledOffscreen, superseded }
 public enum CardAction<CardID: Hashable>: Equatable {
   case swipe(cardID: CardID, direction: SwipeDirection)
@@ -25,7 +25,7 @@ public struct CardStackState<CardID: Hashable>: Equatable {
 }
 
 /// Immutable layout policy. Invalid numeric values are normalized at initialization.
-public struct CardStackConfiguration {
+public struct CardStackConfiguration: Equatable {
   public let visibleCardCount: Int
   public let scaleStep: CGFloat
   public let verticalSpacing: CGFloat
