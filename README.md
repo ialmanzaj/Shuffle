@@ -241,3 +241,8 @@ We love to hear about apps that use Shuffle - feel free to submit a pull request
 
 <p align="center">
 Made with ❤️ by <a href="https://github.com/mac-gallagher">Mac Gallagher</a>
+
+## Identity-based UIKit API
+
+For stable card IDs, explicit command results, transition completion and incremental updates,
+see [CardStackView](Documentation/CardStackView.md). The original SwipeCardStack API remains available.

@@ -24,6 +24,7 @@
 
 import UIKit
 
+@MainActor
 protocol SwipeCardDelegate: AnyObject {
   func cardDidBeginSwipe(_ card: SwipeCard)
   func cardDidCancelSwipe(_ card: SwipeCard)

@@ -227,8 +227,8 @@ class SwipeViewTest: QuickSpec {
         }
       }
 
-      for state in [UIPanGestureRecognizer.State.ended, UIPanGestureRecognizer.State.cancelled] {
-        describe("When an .ended or .cancelled pan gesture state is recognized") {
+      for state in [UIPanGestureRecognizer.State.ended] {
+        describe("When an .ended pan gesture state is recognized") {
           beforeEach {
             testPanGestureRecognizer.performPan(withLocation: nil,
                                                 translation: nil,
@@ -239,6 +239,19 @@ class SwipeViewTest: QuickSpec {
           it("should call the endSwiping method") {
             expect(subject.endSwipingCalled) == true
           }
+        }
+      }
+
+      describe("When a .cancelled pan gesture state is recognized") {
+        beforeEach {
+          testPanGestureRecognizer.performPan(withLocation: nil,
+                                              translation: nil,
+                                              velocity: nil,
+                                              state: .cancelled)
+        }
+        it("should cancel without committing a swipe") {
+          expect(subject.didCancelSwipeCalled) == true
+          expect(subject.endSwipingCalled) == false
         }
       }
 

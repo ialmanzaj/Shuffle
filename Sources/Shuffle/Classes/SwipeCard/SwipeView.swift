@@ -179,8 +179,10 @@ open class SwipeView: UIView {
       beginSwiping(recognizer)
     case .changed:
       continueSwiping(recognizer)
-    case .ended, .cancelled:
+    case .ended:
       endSwiping(recognizer)
+    case .cancelled:
+      didCancelSwipe(recognizer)
     default:
       break
     }
