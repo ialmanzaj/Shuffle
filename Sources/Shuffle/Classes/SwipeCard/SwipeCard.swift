@@ -66,6 +66,8 @@ open class SwipeCard: SwipeView {
   private let overlayContainer = UIView()
   private var overlays = [SwipeDirection: UIView]()
 
+  var automaticallyAnimatesGestures = true
+
   private var animator: CardAnimatable = CardAnimator.shared
 
   // MARK: - Initialization
@@ -178,13 +180,13 @@ open class SwipeCard: SwipeView {
                               with direction: SwipeDirection) {
     super.didSwipe(recognizer, with: direction)
     delegate?.cardDidSwipe(self, withDirection: direction)
-    swipeAction(direction: direction, forced: false)
+    if automaticallyAnimatesGestures { swipeAction(direction: direction, forced: false) }
   }
 
   override open func didCancelSwipe(_ recognizer: UIPanGestureRecognizer) {
     super.didCancelSwipe(recognizer)
     delegate?.cardDidCancelSwipe(self)
-    animator.animateReset(on: self)
+    if automaticallyAnimatesGestures { animator.animateReset(on: self) }
   }
 
   // MARK: - Main Methods

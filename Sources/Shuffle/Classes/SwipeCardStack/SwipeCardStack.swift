@@ -112,6 +112,24 @@ open class SwipeCardStack: UIView, SwipeCardDelegate, UIGestureRecognizerDelegat
     addSubview(cardContainer)
   }
 
+  // AIDEV-NOTE: Leaving a window interrupts UIKit animations with finished == false.
+  // Settle only the presentation; preserve stateManager's remaining indices and swipe history.
+  override open func willMove(toWindow newWindow: UIWindow?) {
+    super.willMove(toWindow: newWindow)
+    guard window != nil, newWindow == nil else { return }
+
+    for card in cardContainer.subviews.compactMap({ $0 as? SwipeCard }) {
+      card.removeAllAnimations()
+      if !visibleCards.contains(where: { $0.card === card }) {
+        card.removeFromSuperview()
+      }
+    }
+    for (position, value) in visibleCards.enumerated() {
+      layoutCard(value.card, at: position)
+    }
+    isAnimating = false
+  }
+
   // MARK: - Layout & Transform
 
   override open func layoutSubviews() {
