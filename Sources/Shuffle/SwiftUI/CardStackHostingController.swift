@@ -50,7 +50,10 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     }
     if self.controller !== controller { disconnect() }
     self.controller = controller
-    itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+    itemsByID.removeAll(keepingCapacity: true)
+    for item in items {
+      itemsByID[item.id] = item
+    }
     self.configuration = configuration
     self.environment = environment
     self.content = content
