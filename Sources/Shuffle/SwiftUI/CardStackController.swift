@@ -11,6 +11,16 @@ public final class CardStackController<ID: Hashable>: @preconcurrency Observable
   /// The engine is authoritative while mounted; detached state is a value checkpoint.
   public var state: CardStackState<ID> { engine?.state ?? detachedSession.state }
 
+  /// Synchronous preflight for clients that perform work before issuing a command.
+  /// Recheck after any suspension; availability is not a reservation.
+  public var isReady: Bool { engine?.window != nil && state.phase == .idle }
+
+  /// Suspends touch input without disabling programmatic swipe/undo commands.
+  /// AIDEV-NOTE: Retain the policy across presentation replacement during an async action.
+  public var isUserInteractionEnabled = true {
+    didSet { engine?.isUserInteractionEnabled = isUserInteractionEnabled }
+  }
+
   private weak var engine: CardStackView<ID>?
   private var detachedSession: CardStackView<ID>.Snapshot = .empty
   private var notificationScheduled = false
@@ -41,6 +51,7 @@ public final class CardStackController<ID: Hashable>: @preconcurrency Observable
   internal func connect(_ stack: CardStackView<ID>) -> Bool {
     guard engine == nil || engine === stack else { return false }
     engine = stack
+    stack.isUserInteractionEnabled = isUserInteractionEnabled
     notifyChange()
     return true
   }

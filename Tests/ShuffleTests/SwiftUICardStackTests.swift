@@ -7,6 +7,32 @@ import XCTest
 @available(iOS 13.0, *)
 @MainActor
 final class SwiftUICardStackTests: XCTestCase {
+  func testAvailabilityAndInputReservationSurviveRemount() throws {
+    let fixture = Fixture(); defer { fixture.close() }
+    XCTAssertTrue(fixture.controller.isReady)
+    fixture.controller.isUserInteractionEnabled = false
+    XCTAssertFalse(try XCTUnwrap(fixture.host.stack).isUserInteractionEnabled)
+    XCTAssertEqual(fixture.controller.swipe(.right, animated: false), .accepted(cardID: 1))
+    fixture.host.disconnect()
+    XCTAssertFalse(fixture.controller.isReady)
+    fixture.remount()
+    XCTAssertTrue(fixture.controller.isReady)
+    XCTAssertFalse(try XCTUnwrap(fixture.host.stack).isUserInteractionEnabled)
+    fixture.controller.isUserInteractionEnabled = true
+    XCTAssertTrue(try XCTUnwrap(fixture.host.stack).isUserInteractionEnabled)
+    XCTAssertEqual(fixture.controller.state.currentCardID, 2)
+  }
+
+  func testAvailabilityRejectsMovingAndOffscreenPresentation() throws {
+    let fixture = Fixture(); defer { fixture.close() }
+    XCTAssertTrue(fixture.controller.isReady)
+    fixture.controller.swipe(.right)
+    XCTAssertFalse(fixture.controller.isReady)
+    try XCTUnwrap(fixture.host.stack).removeFromSuperview()
+    XCTAssertFalse(fixture.controller.isReady)
+    XCTAssertEqual(fixture.controller.swipe(.right), .rejected(.notVisible))
+  }
+
   func testHostedCardContainmentCompletesOnInsertionAndRemovesOnce() throws {
     let parent = UIViewController()
     let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
