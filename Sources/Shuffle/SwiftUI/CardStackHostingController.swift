@@ -26,6 +26,16 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     view.backgroundColor = .clear
   }
 
+  override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    controller?.notifyChange()
+  }
+
+  override func viewDidDisappear(_ animated: Bool) {
+    super.viewDidDisappear(animated)
+    controller?.notifyChange()
+  }
+
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
     stack?.frame = view.bounds
