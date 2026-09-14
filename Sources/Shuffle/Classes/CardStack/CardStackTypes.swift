@@ -25,7 +25,7 @@ public struct CardStackState<CardID: Hashable>: Equatable {
 }
 
 /// Immutable layout policy. Invalid numeric values are normalized at initialization.
-public struct CardStackConfiguration {
+public struct CardStackConfiguration: Equatable {
   public let visibleCardCount: Int
   public let scaleStep: CGFloat
   public let verticalSpacing: CGFloat

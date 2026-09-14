@@ -6,7 +6,6 @@ import UIKit
 internal final class CardStackHostingController<Item: Identifiable, Content: View>: UIViewController {
   private(set) var stack: CardStackView<Item.ID>?
   private var controller: CardStackController<Item.ID>?
-  private var items: [Item] = []
   private var itemsByID: [Item.ID: Item] = [:]
   private var configuration = CardStackConfiguration()
   private var environment = EnvironmentValues()
@@ -19,7 +18,7 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
   private struct HostedCard {
     let id: Item.ID
     weak var card: SwipeCard?
-    let host: UIHostingController<AnyView>
+    let host: UIHostingController<HostedContent<Content>>
     var containmentCompleted = false
   }
   private var hostedCards: [ObjectIdentifier: HostedCard] = [:]
@@ -51,19 +50,19 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     }
     if self.controller !== controller { disconnect() }
     self.controller = controller
-    self.items = items
     itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
     self.configuration = configuration
     self.environment = environment
     self.content = content
     self.onActionAccepted = onActionAccepted
     self.onTransitionEnded = onTransitionEnded
-    controller.received(ids)
+    controller.updateItemIDs(ids)
     needsContentUpdate = true
     if stack == nil { installStack() }
     // Updates during movement are deferred by the engine; do not interrupt hosting content.
     do { try stack?.updateCards(ids) }
     catch { preconditionFailure("Validated card IDs became invalid") }
+    stack?.updateConfiguration(configuration)
     applyContentIfIdle()
   }
 
@@ -85,13 +84,13 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     }
     stack.onTransitionEnded = { [weak self] end in
       guard let self = self else { return }
-      self.reconcileHosting()
+      self.reconcileHostedCards()
       if let callback = self.onTransitionEnded { DispatchQueue.main.async { callback(end) } }
     }
     stack.onStateChanged = { [weak self] _ in
       guard let self = self else { return }
       self.controller?.notifyChange()
-      self.reconcileHosting()
+      self.reconcileHostedCards()
       self.applyContentIfIdle()
     }
   }
@@ -101,7 +100,7 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
       preconditionFailure("Engine requested an ID outside the visual working set")
     }
     let card = SwipeCard()
-    let host = UIHostingController(rootView: AnyView(content(item).environment(\.self, environment)))
+    let host = UIHostingController(rootView: HostedContent(content: content(item), environment: environment))
     host.view.backgroundColor = .clear
     addChild(host)
     card.content = host.view
@@ -113,25 +112,18 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     guard !isApplying, let stack = stack, stack.state.phase == .idle else { return }
     isApplying = true
     defer { isApplying = false }
-    if !sameConfiguration(stack.configuration, configuration) {
-      // Rebuild only at rest, transferring a value checkpoint without replaying actions.
-      removeStack()
-      installStack()
-      do { try self.stack?.updateCards(items.map(\.id)) }
-      catch { preconditionFailure("Validated card IDs became invalid") }
-    }
-    reconcileHosting()
+    reconcileHostedCards()
     guard needsContentUpdate, let content = content else { return }
     needsContentUpdate = false
     // Reuse hosts instead of replacing SwipeCards. EnvironmentValues cannot be compared
     // wholesale, so refresh root values on a SwiftUI update, after movement settles.
     for hosted in hostedCards.values {
       guard let item = itemsByID[hosted.id] else { continue }
-      hosted.host.rootView = AnyView(content(item).environment(\.self, environment))
+      hosted.host.rootView = HostedContent(content: content(item), environment: environment)
     }
   }
 
-  private func reconcileHosting() {
+  private func reconcileHostedCards() {
     for (key, var hosted) in hostedCards {
       if hosted.card?.superview !== stack {
         hosted.host.willMove(toParent: nil)
@@ -174,8 +166,12 @@ internal final class CardStackHostingController<Item: Identifiable, Content: Vie
     isApplying = false
   }
 
-  private func sameConfiguration(_ lhs: CardStackConfiguration, _ rhs: CardStackConfiguration) -> Bool {
-    lhs.visibleCardCount == rhs.visibleCardCount && lhs.scaleStep == rhs.scaleStep
-      && lhs.verticalSpacing == rhs.verticalSpacing && lhs.allowedDirections == rhs.allowedDirections
-  }
+}
+
+@available(iOS 13.0, *)
+private struct HostedContent<Content: View>: View {
+  let content: Content
+  let environment: EnvironmentValues
+
+  var body: some View { content.environment(\.self, environment) }
 }

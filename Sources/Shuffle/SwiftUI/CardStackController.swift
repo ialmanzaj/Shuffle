@@ -52,7 +52,7 @@ public final class CardStackController<ID: Hashable>: @preconcurrency Observable
 
   internal var isConnected: Bool { engine != nil }
 
-  internal func received(_ ids: [ID]) { itemIDs = ids }
+  internal func updateItemIDs(_ ids: [ID]) { itemIDs = ids }
 
   internal func disconnect(_ stack: CardStackView<ID>) {
     guard engine === stack else { return }

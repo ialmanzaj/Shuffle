@@ -91,8 +91,9 @@ The content closure and environment are refreshed on SwiftUI updates; applicatio
 remain responsible for making their own model changes observable to SwiftUI.
 
 Data updates received during movement are deferred by the engine. Hosting content
-and configuration changes are applied at rest. Configuration changes recreate the
-engine from its value checkpoint, preserving visual progress. The outgoing host
+and configuration changes are applied at rest. Configuration changes update the existing engine at rest, preserving history and
+the local SwiftUI state of retained cards. Cards removed by a lower visible count
+release their content; their local state is not retained. The outgoing host
 remains attached until Shuffle removes its card. The adapter handles UIKit child
 containment and removes children on teardown. Styling inside the content belongs
 to the client; the adapter does not reproduce any application's CALayer shadows.

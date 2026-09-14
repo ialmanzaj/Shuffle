@@ -16,6 +16,37 @@ final class CardStackViewTests: XCTestCase {
     return (window, stack)
   }
 
+  func testConfigurationPreservesRetainedCardsAndHistory() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3, 4])
+    stack.swipe(.left, animated: false)
+    let card = try XCTUnwrap(stack.card(for: 2))
+    let configuration = CardStackConfiguration(visibleCardCount: 3, scaleStep: 0.1,
+                                             verticalSpacing: 20, allowedDirections: [.right])
+    XCTAssertEqual(stack.updateConfiguration(configuration), .applied)
+    XCTAssertTrue(stack.card(for: 2) === card)
+    XCTAssertEqual(stack.configuration, configuration)
+    XCTAssertNotNil(stack.card(for: 4))
+    XCTAssertEqual(card.swipeDirections, [.right])
+    XCTAssertTrue(stack.state.canUndo)
+    XCTAssertEqual(stack.undo(animated: false), .accepted(cardID: 1))
+  }
+
+  func testLatestConfigurationAppliesWhenDragSettlesOffscreen() throws {
+    let (window, stack) = fixture(); defer { window.isHidden = true }
+    try stack.updateCards([1, 2, 3])
+    let card = try XCTUnwrap(stack.card(for: 1))
+    stack.cardDidBeginSwipe(card)
+    XCTAssertEqual(stack.updateConfiguration(.init(verticalSpacing: 10)), .deferred)
+    let latest = CardStackConfiguration(verticalSpacing: 30)
+    XCTAssertEqual(stack.updateConfiguration(latest), .deferred)
+    XCTAssertEqual(stack.configuration.verticalSpacing, 0)
+    stack.removeFromSuperview()
+    XCTAssertEqual(stack.configuration, latest)
+    XCTAssertTrue(stack.card(for: 1) === card)
+    XCTAssertEqual(stack.state.phase, .idle)
+  }
+
   func testSnapshotRestoresPositionAndUndoWithoutReplayingActions() throws {
     let (window, stack) = fixture(); defer { window.isHidden = true }
     try stack.updateCards([1, 2, 3])

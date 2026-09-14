@@ -19,7 +19,7 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
     return Snapshot(remaining: ids.filter { !swiped.contains($0) }, history: retainedHistory)
   }
 
-  public let configuration: CardStackConfiguration
+  public private(set) var configuration: CardStackConfiguration
   public var onActionAccepted: ((CardAction<CardID>) -> Void)?
   public var onTransitionEnded: ((CardTransitionEnd<CardID>) -> Void)?
   public var onStateChanged: ((CardStackState<CardID>) -> Void)?
@@ -36,6 +36,7 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   private var phase: CardStackPhase = .idle
   private var generation: UInt64 = 0
   private var transition: (generation: UInt64, action: CardAction<CardID>)?
+  private var pendingConfiguration: CardStackConfiguration?
   private var pendingIDs: [CardID]?
   private var pendingReconfiguration: Set<CardID> = []
   private var pendingParts = 0
@@ -70,6 +71,16 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
     }
     apply(ids)
     notifyState()
+    return .applied
+  }
+
+  /// Applies layout and gesture policy without replacing retained cards or history.
+  /// During movement the latest configuration takes effect when the stack settles.
+  @discardableResult
+  public func updateConfiguration(_ configuration: CardStackConfiguration) -> CardUpdateResult {
+    pendingConfiguration = configuration
+    guard phase == .idle else { return .deferred }
+    render()
     return .applied
   }
 
@@ -143,6 +154,12 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
   }
 
   private func render() {
+    // AIDEV-NOTE: All settlement paths render at rest, including reset and cancelled
+    // gestures. Apply the latest policy here without destroying retained card state.
+    if phase == .idle, let configuration = pendingConfiguration {
+      self.configuration = configuration
+      pendingConfiguration = nil
+    }
     let visible = Array(remaining.prefix(configuration.visibleCardCount))
     var retained = Set(visible)
     if case .swipe(let id, _)? = transition?.action { retained.insert(id) }
@@ -154,11 +171,13 @@ public final class CardStackView<CardID: Hashable>: UIView, SwipeCardDelegate {
         let card = makeCard(id)
         card.automaticallyAnimatesGestures = false
         card.delegate = self
-        card.swipeDirections = SwipeDirection.allDirections.filter { configuration.allowedDirections.contains($0) }
         cards[id] = card
         addSubview(card)
       }
-      if let card = cards[id] { bringSubviewToFront(card) }
+      if let card = cards[id] {
+        card.swipeDirections = SwipeDirection.allDirections.filter { configuration.allowedDirections.contains($0) }
+        bringSubviewToFront(card)
+      }
     }
     if case .swipe(let id, _)? = transition?.action, let card = cards[id] { bringSubviewToFront(card) }
     layoutCards()

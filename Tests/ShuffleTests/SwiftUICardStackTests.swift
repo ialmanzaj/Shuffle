@@ -84,6 +84,23 @@ final class SwiftUICardStackTests: XCTestCase {
     XCTAssertEqual(fixture.events.suffix(2), ["swipe:1", "end:completed"])
   }
 
+  func testResetWithPendingConfigurationDeliversTerminalEvent() async throws {
+    let fixture = Fixture(); defer { fixture.close() }
+    let engine = fixture.host.stack
+    fixture.controller.swipe(.left)
+    fixture.configuration = .init(verticalSpacing: 25, allowedDirections: [.right])
+    fixture.update([Item(id: 1, value: "one"), Item(id: 2, value: "two")])
+    fixture.controller.reset()
+    await framesUntil("pending configuration and reset complete") { fixture.events.count == 2 }
+    XCTAssertEqual(fixture.events, ["swipe:1", "end:superseded"])
+    XCTAssertTrue(fixture.host.stack === engine)
+    XCTAssertEqual(engine?.configuration, fixture.configuration)
+    XCTAssertEqual(fixture.controller.swipe(.left), .rejected(.disallowedDirection))
+    XCTAssertEqual(fixture.controller.swipe(.right), .accepted(cardID: 1))
+    await framesUntil("replacement animation completes") { fixture.events.count == 4 }
+    XCTAssertEqual(fixture.events, ["swipe:1", "end:superseded", "swipe:1", "end:completed"])
+  }
+
   func testResetWhileDetachedStartsOverWithLatestItems() async throws {
     let fixture = Fixture(); defer { fixture.close() }
     fixture.controller.swipe(.left, animated: false)
@@ -129,6 +146,15 @@ final class SwiftUICardStackTests: XCTestCase {
     XCTAssertEqual(fixture.host.children.count, 2)
   }
 
+  func testReplacingItemsWhileExpandingVisibleCountUsesNewWorkingSet() async {
+    let fixture = Fixture(); defer { fixture.close() }
+    fixture.configuration = .init(visibleCardCount: 3)
+    fixture.update([Item(id: 4, value: "four"), Item(id: 5, value: "five"), Item(id: 6, value: "six")])
+    XCTAssertEqual(fixture.controller.state.remainingCardIDs, [4, 5, 6])
+    XCTAssertNotNil(fixture.host.stack?.card(for: 6))
+    XCTAssertEqual(fixture.host.children.count, 3)
+  }
+
   func testArrivalAndConfigurationDuringMovementAreDeferred() async throws {
     let fixture = Fixture(); defer { fixture.close() }
     let outgoing = try XCTUnwrap(fixture.host.stack?.card(for: 1))
@@ -143,7 +169,7 @@ final class SwiftUICardStackTests: XCTestCase {
     XCTAssertEqual(fixture.controller.swipe(.left), .rejected(.busy))
     await framesUntil("transition and configuration settle") { fixture.events.count == 2 }
     XCTAssertEqual(fixture.controller.state.currentCardID, 4)
-    XCTAssertFalse(fixture.host.stack === original)
+    XCTAssertTrue(fixture.host.stack === original)
     XCTAssertEqual(fixture.host.stack?.configuration.verticalSpacing, 20)
     XCTAssertEqual(fixture.controller.undo(animated: false), .accepted(cardID: 1))
   }
@@ -194,7 +220,7 @@ final class SwiftUICardStackTests: XCTestCase {
     XCTAssertEqual(controller.swipe(.right, animated: false), .accepted(cardID: 1))
     await framesUntil("public events") { events == ["action", "end"] }
     root?.rootView = AnyView(EmptyView())
-    await framesUntil("public representable dismantled") { controller.swipe(.right) == .rejected(.notVisible) }
+    await framesUntil("public representable dismantled") { !controller.isConnected }
     window.rootViewController = nil
     root = nil
     await framesUntil("root releases") { weakRoot == nil }
@@ -211,7 +237,29 @@ final class SwiftUICardStackTests: XCTestCase {
     XCTAssertEqual(second.controller.state.currentCardID, 2)
   }
 
-  func testContentUpdatePreservesLocalSwiftUIState() async {
+  func testPendingConfigurationCannotAffectReplacementController() async {
+    let first = Fixture(); defer { first.close() }
+    first.controller.swipe(.left)
+    first.configuration = .init(verticalSpacing: 40)
+    first.update([Item(id: 1, value: "one"), Item(id: 2, value: "two")])
+    first.host.disconnect()
+    let replacement = CardStackController<Int>()
+    var replacementEvents = 0
+    first.host.update(items: [Item(id: 9, value: "new")], controller: replacement,
+                      configuration: .init(verticalSpacing: 5), environment: first.environment,
+                      content: { Probe(item: $0, report: { _ in }) },
+                      onActionAccepted: { _ in replacementEvents += 1 },
+                      onTransitionEnded: { _ in replacementEvents += 1 },
+                      onError: { _ in XCTFail("Replacement should connect") })
+    await framesUntil("old presentation settles") { first.events.count == 2 }
+    XCTAssertEqual(first.events, ["swipe:1", "end:settledOffscreen"])
+    XCTAssertEqual(replacementEvents, 0)
+    XCTAssertEqual(replacement.state.currentCardID, 9)
+    XCTAssertEqual(first.host.stack?.configuration.verticalSpacing, 5)
+    XCTAssertFalse(first.controller.isConnected)
+  }
+
+  func testContentAndConfigurationUpdatePreserveLocalSwiftUIState() async {
     let controller = CardStackController<Int>()
     let host = CardStackHostingController<Item, StatefulProbe>()
     let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
@@ -219,9 +267,9 @@ final class SwiftUICardStackTests: XCTestCase {
     window.isHidden = false
     defer { host.disconnect(); window.isHidden = true; window.rootViewController = nil }
     var reports: [String: UUID] = [:]
-    func update(_ title: String) {
+    func update(_ title: String, configuration: CardStackConfiguration = .init()) {
       host.update(items: [Item(id: 1, value: title)], controller: controller,
-                  configuration: .init(), environment: EnvironmentValues(),
+                  configuration: configuration, environment: EnvironmentValues(),
                   content: { StatefulProbe(title: $0.value, report: { reports[$0] = $1 }) },
                   onActionAccepted: { _ in }, onTransitionEnded: { _ in },
                   onError: { _ in XCTFail("Valid content should update") })
@@ -229,9 +277,23 @@ final class SwiftUICardStackTests: XCTestCase {
     }
     update("first")
     await framesUntil("initial local state") { reports["first"] != nil }
-    update("second")
+    update("second", configuration: .init(visibleCardCount: 3, verticalSpacing: 20))
     await framesUntil("updated local state") { reports["second"] != nil }
     XCTAssertEqual(reports["first"], reports["second"], "Content updates must not reset local @State")
+  }
+
+  func testSwiftUIViewObservesControllerState() async {
+    let fixture = Fixture(); defer { fixture.close() }
+    var reports: [String] = []
+    let observer = UIHostingController(rootView: ControllerProbe(controller: fixture.controller,
+                                                               report: { reports.append($0) }))
+    fixture.host.addChild(observer)
+    fixture.host.view.addSubview(observer.view)
+    observer.didMove(toParent: fixture.host)
+    defer { observer.willMove(toParent: nil); observer.view.removeFromSuperview(); observer.removeFromParent() }
+    await framesUntil("initial observed state") { reports.contains("1:false") }
+    fixture.controller.swipe(.right, animated: false)
+    await framesUntil("SwiftUI observes command state") { reports.contains("2:true") }
   }
 
   func testPublicViewForwardsEnvironmentObjects() async {
@@ -393,4 +455,13 @@ private struct EnvironmentProbe: View {
   @EnvironmentObject private var model: EnvironmentModel
   let report: (String) -> Void
   var body: some View { Reporter(value: model.title, report: report) }
+}
+
+@available(iOS 13.0, *)
+private struct ControllerProbe: View {
+  @ObservedObject var controller: CardStackController<Int>
+  let report: (String) -> Void
+  var body: some View {
+    Reporter(value: "\(controller.state.currentCardID ?? -1):\(controller.state.canUndo)", report: report)
+  }
 }
